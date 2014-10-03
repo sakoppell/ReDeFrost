@@ -17,7 +17,7 @@ using namespace std;
 
 static const double PI=3.14159265359;
 static const double x_max=10;
-static const double sim_grid_size=32;
+static const double sim_grid_size=128;
 static const double dx=x_max/sim_grid_size;
 static const int Np=sim_grid_size+4;//71;//primes: 64+4->71, 128+4->137, 256+4->263
 static const int N=sim_grid_size+4;//sim_grid_size-4;
@@ -387,38 +387,44 @@ void CheckConservation(cons_class Cons, fstream& grid_file){
 
 void Ecollect(field_class Phi, cons_class Cons, int t, int Tmax){
     if(t%(Cons.wait+5)==1){
-    
+        double pressure=0;
         int E_t=t/(Cons.wait+5);
-        #pragma omp parallel for reduction(+:Cons.Pressure[E_t])
+        #pragma omp parallel for reduction(+:pressure)
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){for(int L=1;L<4;L++){
-                        Cons.Pressure[E_t]+=_Tuv(Phi,L,L,I,J,K);
+                        pressure+=_Tuv(Phi,L,L,I,J,K);
         }}}}
         
-        Cons.Pressure[E_t]=Cons.Pressure[E_t]/pow(N-4,3)/3*pow(Phi.Ah[0],2);
+        Cons.Pressure[E_t]=pressure/pow(N-4,3)/3*pow(Phi.Ah[0],2);
         
         double * Ttemp;
         Ttemp=new double[NNN];
+        double dxmomentum=0;
+        
         for(int U=1;U<4;U++){
         #pragma omp parallel for
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
                     Ttemp[cp(I,J,K)]=_Tuv(Phi,U,0,I,J,K);
         }   }   }
-        #pragma omp parallel for reduction(+:Cons.DxMomentum[E_t])
+        dxmomentum=0;
+        #pragma omp parallel for reduction(+:dxmomentum)
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
-                    Cons.DxMomentum[E_t]+=Dx(Ttemp,0,0,I,J,K,U);
+                    dxmomentum+=Dx(Ttemp,0,0,I,J,K,U);
         }   }   }
         }
         delete [] Ttemp;
-        Cons.DxMomentum[E_t]=Cons.DxMomentum[E_t]/pow(N-4,3)/3;
+        Cons.DxMomentum[E_t]=dxmomentum/pow(N-4,3)/3;
     }
     
     int E_t=t/(Cons.wait+5)*5+t%(Cons.wait+5);//Current E index
-    #pragma omp parallel for reduction(+:Cons.Density)
+    
+    double density=0;
+    
+    #pragma omp parallel for reduction(+:density)
     for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
-                Cons.Density[E_t]+=_Tuv(Phi,0,0,I,J,K);
+                density+=_Tuv(Phi,0,0,I,J,K);
     }   }   }
     
-    Cons.Density[E_t]=Cons.Density[E_t]/pow(N-4,3);
+    Cons.Density[E_t]=density/pow(N-4,3);
   
     if(t%(Cons.wait+5)==4){
         int E_n=t/(Cons.wait+5);
@@ -485,7 +491,7 @@ void collect(field_class Phi, out_class Fout, cons_class Cons, int t, int output
 
 int main(){
     
-    double t_max=100*dt;
+    double t_max=10*dt;
     int datablock=1;
     int E_wait=1;
     int O_wait=1;
