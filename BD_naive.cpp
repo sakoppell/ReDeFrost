@@ -7,16 +7,12 @@
 //
 
 #include "BD_naive.h"
-#include "ReDeFrost2.h"
 
-int N=int(x_max/dx);
-int GS=N*N*N;
-double dk=2*PI/x_max;
 
 void grand(double GRAND[])//gausian random noise
 {
     SEED++;
-
+    double PI=3.1415926535;
     srand(int(time(NULL))*SEED+SEED);
     int RANDSTRING=rand();
     URAND=(RANDSTRING%10000)/double(10000);
@@ -42,6 +38,17 @@ void grand(double GRAND[])//gausian random noise
 
 
 int main(){
+    double PI=3.1415926535;
+    double x_max=10;
+    static const double sim_grid_size=32;
+    static const double dx=x_max/sim_grid_size;
+    static const int N=sim_grid_size;
+    static const int Nscalars=2;
+    int GS=N*N*N;
+    double dk=2*PI/x_max;
+    double H0=.50467;
+    double M[2]={1,0};
+
     Meff=new double [Nscalars];
     for(int H=0;H<Nscalars;H++) Meff[H]=9/4.*H0+M[H];
     phi_x=new fftw_complex[GS];
@@ -118,11 +125,11 @@ int main(){
         diag_file.close();
         */
         for(int I=0;I<GS;I++){
-            BD_out[I*Nscalars+H]=phi_x[I][0];
-            BD_out[I*Nscalars+H+GS*Nscalars]=pi_x[I][0];
+            BD_out[I+2*H*GS]=phi_x[I][0];
+            BD_out[I+2*H*GS+GS]=pi_x[I][0];
         }
     }
-
+    fstream BD_file;
     BD_file.open("BD_file.txt", ios::out | ios::binary);
     BD_file.write(reinterpret_cast<const char*>(BD_out),sizeof(double)*GS*2*Nscalars);
     BD_file.close();

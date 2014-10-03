@@ -15,35 +15,40 @@
 
 using namespace std;
 
-const double PI=3.14159265359;
-const double x_max=10;
-const double sim_grid_size=64;
-const double dx=x_max/sim_grid_size;
-const int Np=sim_grid_size+4;//71;//primes: 64+4->71, 128+4->137, 256+4->263
-const int N=sim_grid_size+4;//sim_grid_size-4;
-const int Nscalars=2;
-const double lambda=.5;
-const double dt=dx*lambda;
-const int NNN=Np*Np*Np;
+static const double PI=3.14159265359;
+static const double x_max=10;
+static const double sim_grid_size=32;
+static const double dx=x_max/sim_grid_size;
+static const int Np=sim_grid_size+4;//71;//primes: 64+4->71, 128+4->137, 256+4->263
+static const int N=sim_grid_size+4;//sim_grid_size-4;
+static const int Nscalars=2;
+static const double lambda=.5;
+static const double dt=dx*lambda;
+static const int NNN=Np*Np*Np;
 
 
 class field_class{
     public:
-        double *field, *G, *Ginv, *M;
-        double *Lh, *Ah;
+        double *field, *G, *Ginv, *M, *Lh, *Ah;
 };
 
 
 class cons_class{
     public:
-        int length;
-        double *Tuv, *Pressure, *Momentum, *DxMomentum, *DtDensity, *Phi_cons, *Lhist, *Ahist;
+        int wait,length;
+        double *Error, *Pressure, *DxMomentum, *DtDensity, *Density, *Phi_cons;
 };
 
+class out_class{
+    public:
+        int out_bock,fft_samples, wait, length;
+        double *meanfield, *stdevfield, *fftwfield;
+    
+};
 
 inline int cp(int x, int y, int z){//field #, conjugate, time, x,y,z
-    if(x>N || x<0 || y>N || y<0 || z>N || z<0) cout<<"cp overflow "<<x<<" "<<y<<" "<<z<<endl;
-    return x+Np*(y+Np*z);
+    //if(x>N || x<0 || y>N || y<0 || z>N || z<0) cout<<"cp overflow "<<x<<" "<<y<<" "<<z<<endl;
+    return z+Np*(y+Np*x);
 }
 
 inline int cg(int mu, int nu, int x,int y, int z){
@@ -123,15 +128,15 @@ double DPot(field_class Phi, int x, int y, int z, int wrt){//derivative is with 
     if (wrt==0) return Phi.field[cp(x,y,z)]+10000*Phi.field[cp(x,y,z)]*pow(Phi.field[cp(x,y,z)+2*NNN],2);
     else return 10000*Phi.field[cp(x,y,z)+NNN*2]*pow(Phi.field[cp(x,y,z)],2);
 }
-/*
-double Christoffel(int I, int J, int K, int x, int y, int z){//GAMMA^I_J_K
-    double symbol=0;
-    for(int L=0;L<4;L++){
-        symbol+=G[cg(I,L,x,y,z)]*(Dx(G,L,J,0,x,y,z,K)+Dx(G,L,K,0,x,y,z,J)-Dx(G,J,K,0,x,y,z,L))/2;
-    }
-    return symbol;
+
+
+double Christoffel(field_class Phi, int I, int J, int K){//GAMMA^I_J_K
+    if(I==0 & J==K) return pow(Phi.Ah[0],2)/Phi.Lh[0];
+    else if(J==0 & I==K) return 1.0/Phi.Lh[0];
+    else if(K==0 & I==J) return 1.0/Phi.Lh[0];
+    else return 0;
 }
-*/
+
 
 double _Tuv(field_class Phi, int u, int v, int x, int y, int z){
     double T=0;
@@ -150,8 +155,9 @@ double _Tuv(field_class Phi, int u, int v, int x, int y, int z){
 }
 
 void D_Phi(double K_Phi[], field_class Phi){
-    //#pragma omp parallel for
-    for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){for(int H=0;H<Nscalars;H++) {
+    for(int H=0;H<Nscalars;H++){
+    #pragma omp parallel for
+    for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
         int block=2*NNN*H;
         K_Phi[cp(I,J,K)+block]=Phi.field[cp(I,J,K)+block+NNN];
         K_Phi[cp(I,J,K)+block+NNN]=-Phi.field[cp(I,J,K)+block+NNN]*3/Phi.Lh[0] -DPot(Phi,I,J,K,H)+Gradient(Phi.field,H,0,I,J,K)/pow(Phi.Ah[0],2);
@@ -210,7 +216,7 @@ void startgrid(field_class Phi, int N, int Nscalars, double H0, double phi0, dou
     
     for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++) {for(int K=2;K<N-2;K++){
         Phi.field[cp(I,J,K)]=phi0;//sin((I-2)*2*PI/(N-4));//exp(-64/pow(double(N),2)*(pow((I-N/2),2)+pow((J-N/2),2)));//1;//
-        Phi.field[cp(I,J,K)+NNN]=0;//pi0;//sin(J*2*pi/N)*sin(I*2*pi/N);pi0;//
+        Phi.field[cp(I,J,K)+NNN]=pi0;//sin(J*2*pi/N)*sin(I*2*pi/N);pi0;//
         Phi.field[cp(I,J,K)+2*NNN]=0;
         Phi.field[cp(I,J,K)+3*NNN]=0;
     }}}
@@ -331,6 +337,7 @@ void advance(field_class Phi,int inflation_on){
     delete [] Phi_1.Lh;
 }
 
+/*
 void CheckConservation(cons_class Cons, fstream& grid_file){
     //"Tuv" now stores:
     //(U,V)=(0,0) the integral of the S-E tensor scaled by sqrt(-g) (at times t%Eblock<5)
@@ -360,7 +367,7 @@ void CheckConservation(cons_class Cons, fstream& grid_file){
     grid_file<<endl<<endl;
 
     
-    /*for(int I=0;I<Cons.length;I++) cons_E2[0]+=cons_E2[I];
+    for(int I=0;I<Cons.length;I++) cons_E2[0]+=cons_E2[I];
 
     grid_file<<"sqrt(E^2) per grid point "<<sqrt(cons_E2[0]/Cons.length)/pow(N,3)<<endl;
     Cons.Phi_cons[0]=pow(Cons.Phi_cons[0],2);
@@ -371,56 +378,88 @@ void CheckConservation(cons_class Cons, fstream& grid_file){
     
     grid_file<<"residual curvature "<<endl;
     for(int I=0;I<Cons.length;I++) grid_file<<Cons.Ahist[I]*Cons.Ahist[I]*(Cons.Tuv[16*(5*I+2)]/3-1./Cons.Lhist[I]/Cons.Lhist[I])<<endl;
-    */
+ 
     delete [] cons_E2;
     delete [] DtT00;
     return;
 }
+*/
 
-void Ecollect(field_class Phi, cons_class Cons, int t, int E_wait, int EL, int Tmax){
-    if(t%(E_wait+5)==2){
-        int E_t=t/(E_wait+5);
-        #pragma omp parallel for
+void Ecollect(field_class Phi, cons_class Cons, int t, int Tmax){
+    if(t%(Cons.wait+5)==1){
+    
+        int E_t=t/(Cons.wait+5);
+        #pragma omp parallel for reduction(+:Cons.Pressure[E_t])
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){for(int L=1;L<4;L++){
                         Cons.Pressure[E_t]+=_Tuv(Phi,L,L,I,J,K);
         }}}}
-    
-        Cons.Lhist[E_t]=Phi.Lh[0];
-        Cons.Ahist[E_t]=Phi.Ah[0];
+        
+        Cons.Pressure[E_t]=Cons.Pressure[E_t]/pow(N-4,3)/3*pow(Phi.Ah[0],2);
         
         double * Ttemp;
-        Ttemp=new double[N*N*N];
+        Ttemp=new double[NNN];
         for(int U=1;U<4;U++){
         #pragma omp parallel for
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
                     Ttemp[cp(I,J,K)]=_Tuv(Phi,U,0,I,J,K);
         }   }   }
-        #pragma omp parallel for
+        #pragma omp parallel for reduction(+:Cons.DxMomentum[E_t])
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
-                    Cons.Tuv[U+16*E_t]+=Dx(Ttemp,0,0,I,J,K,U);
+                    Cons.DxMomentum[E_t]+=Dx(Ttemp,0,0,I,J,K,U);
         }   }   }
         }
         delete [] Ttemp;
+        Cons.DxMomentum[E_t]=Cons.DxMomentum[E_t]/pow(N-4,3)/3;
     }
     
-    int E_t=t/(E_wait+5)*5+t%(E_wait+5);//Current E index
-    #pragma omp parallel for
+    int E_t=t/(Cons.wait+5)*5+t%(Cons.wait+5);//Current E index
+    #pragma omp parallel for reduction(+:Cons.Density)
     for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
-                Cons.Tuv[0+16*E_t]+=_Tuv(Phi,0,0,I,J,K);
+                Cons.Density[E_t]+=_Tuv(Phi,0,0,I,J,K);
     }   }   }
     
-    for(int U=0;U<4;U++){
+    Cons.Density[E_t]=Cons.Density[E_t]/pow(N-4,3);
+  
+    if(t%(Cons.wait+5)==4){
+        int E_n=t/(Cons.wait+5);
+        Cons.DtDensity[E_n]=(Cons.Density[E_t-4]-8*Cons.Density[E_t-3]+8*Cons.Density[E_t-1]-Cons.Density[E_t])/(12*dt);
+        Cons.Error[E_n]=Cons.DtDensity[E_n]+3*Cons.DxMomentum[E_n]+3.0/Phi.Lh[0]*(pow(Phi.Ah[0],2)*Cons.Pressure[E_n]+Cons.Density[E_t-2]);
+
+    //cout<<Cons.Density[E_n]<<endl;
+    //cout<<Cons.Pressure[E_n]<<endl;
+    }
+    
+    
+    /*for(int U=0;U<4;U++){
     #pragma omp parallel for
     for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
                 Cons.Phi_cons[E_t]+=DetG(Phi,I,J,K)*Phi.Ginv[cg(0,U,I,J,K)]*Dx(Phi.field,0,0,I,J,K,U);
-                if(U==0) Cons.Phi_cons[E_t+5*EL]=DetG(Phi,I,J,K)*DPot(Phi,I,J,K,0);
+                if(U==0) Cons.Phi_cons[E_t+5*Cons.length]=DetG(Phi,I,J,K)*DPot(Phi,I,J,K,0);
     }   }   }
-    }
+    }*/
     
     return;
 }
 
-void collect(field_class Phi, int t, int output_type, fstream& grid_file){
+void Ocollect(field_class Phi, out_class Fout, int T, fstream& grid_file){
+    double temp=0;
+    for(int H=0;H<Nscalars*2;H++){
+        temp=0;
+        #pragma omp parallel for reduction(+:mean)
+        for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){ temp+=Phi.field[cp(I,J,K)+H*NNN];}}}
+        Fout.meanfield[T/Fout.wait+H*Fout.length]=temp/pow(N-4,3);
+    }
+    for(int H=0;H<Nscalars*2;H++){
+        temp=0;
+        #pragma omp parallel for reduction(+:mean)2*H*
+        for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){ temp+=pow(Phi.field[cp(I,J,K)+H*NNN]-Fout.meanfield[T/Fout.wait+H*Fout.length],2);}}}
+        Fout.stdevfield[T/Fout.wait+H*Fout.length]=sqrt(temp)/pow(N-4,3);
+    }
+
+    //for(int H=0;H<Nscalars;H++) grid_file<<"*** Field "<<H<<" - mean phi: "<<Fout.meanfield[T/O_wait+2*H*OL]<<", stdev phi: "<<Fout.stdevfield[T/O_wait+2*H*OL]<<" - mean pi: "<<Fout.meanfield[T/O_wait+OL+2*H*OL]<<", stdev pi: "<<Fout.stdevfield[T/O_wait+OL+2*H*OL]<<endl;
+}
+
+void collect(field_class Phi, out_class Fout, cons_class Cons, int t, int output_type, fstream& grid_file){
 
     if(output_type==1){
         if(t==0){
@@ -431,9 +470,14 @@ void collect(field_class Phi, int t, int output_type, fstream& grid_file){
         grid_file.write(reinterpret_cast<const char*>(Phi.field), sizeof(double)*N*N*N*Nscalars);//reinterpret_cast<const char*>(&Phi[I])
     }
     if(output_type==2){
-        grid_file<<t*dt;
-        for(int I=2;I<N-2;I=I+(N-4)/8) grid_file<<"   "<<Phi.field[cp(I,2,2)]*pow(Phi.Ah[0],1.5);
-        grid_file<<"    "<<Phi.Ah[0]<<"   "<<Phi.Lh[0]/pow(Phi.Ah[0],1.5)<<"    "<<Phi.Lh[0]<<"   "<<Phi.field[cp(2,2,2)]-1.009343<<endl;
+        grid_file<<t<<" "<<t*dt;
+        //for(int I=2;I<N-2;I=I+(N-4)/1) grid_file<<"   "<<Phi.field[cp(I,2,2)]*pow(Phi.Ah[0],1.5);
+        //for(int I=2;I<N-2;I=I+(N-4)/1) grid_file<<"   "<<Phi.field[cp(I,2,2)+NNN]*pow(Phi.Ah[0],1.5);
+        for(int H=0;H<Nscalars;H++) grid_file<<"    "<<Fout.meanfield[t/Fout.wait+2*Fout.wait*H]*pow(Phi.Ah[0],1.5)<<"   "<<Fout.stdevfield[t/Fout.wait+2*Fout.wait*H]*pow(Phi.Ah[0],1.5)<<"  "<<Fout.meanfield[t/Fout.wait+2*Fout.wait*H+Fout.length]*pow(Phi.Ah[0],1.5)<<"   "<<Fout.stdevfield[t/Fout.wait+2*Fout.wait*H+Fout.length]*pow(Phi.Ah[0],1.5);
+        grid_file<<"    "<<Phi.Ah[0]<<"    "<<Phi.Lh[0];
+        
+        if(t%(Cons.wait+5)==4) grid_file<<"  -  "<<Cons.DtDensity[t/(Cons.wait+5)]<<"  "<<Cons.DxMomentum[t/(Cons.wait+5)]<<"   "<<Cons.Pressure[t/(Cons.wait+5)]<<"    "<<Cons.Density[t/(Cons.wait+5)*5+2]<<" "<<Cons.Error[t/(Cons.wait+5)];
+        grid_file<<endl;
     }
 
     return;
@@ -441,14 +485,15 @@ void collect(field_class Phi, int t, int output_type, fstream& grid_file){
 
 int main(){
     
-    double t_max=128*dt;
+    double t_max=100*dt;
     int datablock=1;
     int E_wait=1;
-    int inflation_on=1;
+    int O_wait=1;
+    int inflation_on=1;//1=on, 0=off
     int output_type=2;
     double H0=.50467;
     double phi0=1.009343;
-    double pi0=-sqrt(2)*phi0;
+    double pi0=-phi0/sqrt(2)*inflation_on;
     
     
     int Tmax=int(t_max/dt);
@@ -456,8 +501,8 @@ int main(){
 
     field_class PHI;
     PHI.field=new double[gridsize];
-    PHI.G=new double[16*N*N*N];
-    PHI.Ginv=new double[16*N*N*N];
+    PHI.G=new double[16*NNN];
+    PHI.Ginv=new double[16*NNN];
     PHI.M=new double[Nscalars];
     PHI.Ah=new double[1];
     PHI.Lh=new double[1];
@@ -466,37 +511,49 @@ int main(){
 
     int EL=(Tmax+1)/(E_wait+5);
     CONS.length=EL;
-    CONS.Tuv=new double[16*(EL*5)];// for now I just care about the T0v or Tu0 components - there are 12 other components of Tuv though.
+    CONS.wait=E_wait;
+    CONS.Error=new double[EL];
     CONS.Pressure=new double[EL];
-    CONS.Momentum=new double[EL];
     CONS.DxMomentum=new double[EL];
     CONS.DtDensity=new double[EL];
-    CONS.Phi_cons=new double[2*(EL*5)];
-    CONS.Lhist=new double[EL];
-    CONS.Ahist=new double[EL];
+    CONS.Density=new double[EL*5];
+    CONS.Phi_cons=new double[EL*5];
+    
+    out_class FOUT;
+    
+    int OL=(Tmax)/(O_wait)+1;
+    FOUT.wait=O_wait;
+    FOUT.length=OL;
+    FOUT.meanfield=new double[OL*Nscalars*2];
+    FOUT.stdevfield=new double[OL*Nscalars*2];
+    FOUT.fftwfield=new double[OL*20*Nscalars*2];
+    
     
     fstream grid_file;
-
     grid_file.open("grid_file.txt", ios::out | ios::binary);
+    
     startgrid(PHI,N,Nscalars,H0,phi0,pi0,inflation_on);
+    
     time_t start_timer;
     time_t end_timer;
     time(&start_timer);
     
-    collect(PHI, 0, output_type, grid_file);
-    //Ecollect(PHI, CONS, 0, E_wait, EL, Tmax);
-    cout<<"0%  ---"<<endl;
+    Ocollect(PHI, FOUT, 0, grid_file);
+    Ecollect(PHI, CONS, 0, Tmax);
+    collect(PHI, FOUT, CONS, 0, output_type, grid_file);
+
+    cout<<"0%  ---*"<<endl;
     for(int T=1;T<Tmax+1;T++){
         cout<<T*1.0/Tmax*100<<"%";
         advance(PHI,inflation_on);
-        if (T%datablock==0) collect(PHI, T, output_type, grid_file);
-        //if (T%(E_wait+5)<5 && EL>0){ Ecollect(PHI, CONS, T, E_wait, EL, Tmax); cout<<"  ---";}
+        if (T%(E_wait+5)<5 && EL>0){ Ecollect(PHI, CONS, T, Tmax); cout<<"  ---";}
+        if ((T)%(O_wait)==0){ Ocollect(PHI, FOUT, T, grid_file); cout<<" *";}
+        if (T%O_wait==0) collect(PHI, FOUT, CONS, T, output_type, grid_file);
         cout<<endl;
     }
     time(&end_timer);
     cout<<"Main Loop Runtime: "<<difftime(end_timer,start_timer)<<endl;
     
-    //if(EL>0) CheckConservation(CONS, grid_file);
     grid_file.close();
     return 1;
 }
