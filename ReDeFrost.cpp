@@ -6,14 +6,8 @@
 //
 //
 
-#include <algorithm>
-#include <complex>
-#include <iostream>
-#include <cmath>
-#include <fstream>
-#include <ctime>
+#include "ReDeFrost.h"
 
-using namespace std;
 
 static const double PI=3.14159265359;
 static const double x_max=10;
@@ -23,28 +17,9 @@ static const int Np=sim_grid_size+4;//71;//primes: 64+4->71, 128+4->137, 256+4->
 static const int N=sim_grid_size+4;//sim_grid_size-4;
 static const int Nscalars=2;
 static const double lambda=.5;
-static const double dt=dx*lambda;
+static const double dt=pow(2,-10);//dx*lambda;
 static const int NNN=Np*Np*Np;
 
-
-class field_class{
-    public:
-        double *field, *G, *Ginv, *M, *Lh, *Ah;
-};
-
-
-class cons_class{
-    public:
-        int wait,length;
-        double *Error, *Pressure, *DxMomentum, *DtDensity, *Density, *Phi_cons;
-};
-
-class out_class{
-    public:
-        int out_bock,fft_samples, wait, length;
-        double *meanfield, *stdevfield, *fftwfield;
-    
-};
 
 inline int cp(int x, int y, int z){//field #, conjugate, time, x,y,z
     //if(x>N || x<0 || y>N || y<0 || z>N || z<0) cout<<"cp overflow "<<x<<" "<<y<<" "<<z<<endl;
@@ -156,9 +131,9 @@ double _Tuv(field_class Phi, int u, int v, int x, int y, int z){
 
 void D_Phi(double K_Phi[], field_class Phi){
     for(int H=0;H<Nscalars;H++){
+    int block=2*NNN*H;
     #pragma omp parallel for
     for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){
-        int block=2*NNN*H;
         K_Phi[cp(I,J,K)+block]=Phi.field[cp(I,J,K)+block+NNN];
         K_Phi[cp(I,J,K)+block+NNN]=-Phi.field[cp(I,J,K)+block+NNN]*3/Phi.Lh[0] -DPot(Phi,I,J,K,H)+Gradient(Phi.field,H,0,I,J,K)/pow(Phi.Ah[0],2);
     }}}}
@@ -199,27 +174,37 @@ void D_Ah(double K_Ah[], field_class Phi,int inflation_on){
     return;
 }
 
-void startgrid(field_class Phi, int N, int Nscalars, double H0, double phi0, double pi0, int inflation_on){
+void startgrid(field_class Phi, int N, int Nscalars, double H0, double * phi0, double * pi0, int inflation_on){
     //initial conditions
     for(int I=0;I<2*NNN*Nscalars;I++) Phi.field[I]=0;
     for(int I=0;I<NNN*16;I++) Phi.G[I]=0;
     
-    Phi.M[0]=1;
-    Phi.M[1]=0;
-    
-    fstream BD_file;
-    BD_file.open("BD_file.txt", ios::in | ios::binary);
-    double * Ttemp;
-    Ttemp=new double[int(pow(N-4,3))*Nscalars];
+    //fstream BD_file;
+    //BD_file.open("BD_file.txt", ios::in | ios::binary);
+    double * BD_vac;
+    BD_vac=new double[int(pow(sim_grid_size,3))*Nscalars*2];
+    BD_vac=gen_BD(sim_grid_size, Nscalars, x_max, H0, Phi.M);
+
     //BD_file.read(reinterpret_cast<char*>(Ttemp), sizeof(double)*gridsize);
-    BD_file.close();
+    //BD_file.close();
     
-    for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++) {for(int K=2;K<N-2;K++){
+    /*for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++) {for(int K=2;K<N-2;K++){
         Phi.field[cp(I,J,K)]=phi0;//sin((I-2)*2*PI/(N-4));//exp(-64/pow(double(N),2)*(pow((I-N/2),2)+pow((J-N/2),2)));//1;//
         Phi.field[cp(I,J,K)+NNN]=pi0;//sin(J*2*pi/N)*sin(I*2*pi/N);pi0;//
         Phi.field[cp(I,J,K)+2*NNN]=0;
         Phi.field[cp(I,J,K)+3*NNN]=0;
-    }}}
+    }}}*/
+    int Hblock=0;
+    int Hblock_s=0;
+    for(int H=0;H<Nscalars;H++){
+        Hblock=2*NNN*H;
+        Hblock_s=2*int(pow(sim_grid_size,3))*H;
+    for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++) {for(int K=2;K<N-2;K++){
+        Phi.field[cp(I,J,K)+Hblock]=phi0[H]+BD_vac[cp(I-2,J-2,K-2)+Hblock_s];
+        Phi.field[cp(I,J,K)+Hblock+NNN]=pi0[H]+BD_vac[cp(I-2,J-2,K-2)+Hblock_s+int(pow(sim_grid_size,3))];
+    }}}}
+
+    
     wrap(Phi.field);
 
     for(int I=0;I<N;I++){for(int J=0;J<N;J++) {for(int K=0;K<N;K++){
@@ -244,7 +229,7 @@ void startgrid(field_class Phi, int N, int Nscalars, double H0, double phi0, dou
             Phi.Ginv[cg(L,L,I,J,K)]=pow(Phi.Ah[0],-2);
     }}}}
     
-    delete [] Ttemp;
+    delete [] BD_vac;
     return;
 }
 
@@ -274,6 +259,7 @@ void advance(field_class Phi,int inflation_on){
     D_Lh(K1_Lh,Phi);
     D_Ah(K1_Ah,Phi,inflation_on);
     
+    
     #pragma omp parallel for
     for(int I=0;I<gridsize;I++){
         Phi_1.field[I]=Phi.field[I]+dt/2*K1_Phi[I];
@@ -293,6 +279,7 @@ void advance(field_class Phi,int inflation_on){
         Phi_1.field[I]=Phi.field[I]+dt/2*K2_Phi[I];
     }
     
+    
     Phi_1.Lh[0]=Phi.Lh[0]+dt/2*K2_Lh[0];
     Phi_1.Ah[0]=Phi.Ah[0]+dt/2*K2_Ah[0];
     
@@ -307,6 +294,7 @@ void advance(field_class Phi,int inflation_on){
         Phi_1.field[I]=Phi.field[I]+dt*K3_Phi[I];
     }
     
+    
     Phi_1.Lh[0]=Phi.Lh[0]+dt*K3_Lh[0];
     Phi_1.Ah[0]=Phi.Ah[0]+dt*K3_Ah[0];
 
@@ -320,6 +308,7 @@ void advance(field_class Phi,int inflation_on){
     for(int I=0;I<gridsize;I++){
         Phi.field[I]+=dt/6*(K1_Phi[I]+2*K2_Phi[I]+2*K3_Phi[I]+K4_Phi[I]);
     }
+    
 
     Phi.Lh[0]+=dt/6*(K1_Lh[0]+2*K2_Lh[0]+2*K3_Lh[0]+K4_Lh[0]);
     Phi.Ah[0]+=dt/6*(K1_Ah[0]+2*K2_Ah[0]+2*K3_Ah[0]+K4_Ah[0]);
@@ -451,13 +440,13 @@ void Ocollect(field_class Phi, out_class Fout, int T, fstream& grid_file){
     double temp=0;
     for(int H=0;H<Nscalars*2;H++){
         temp=0;
-        #pragma omp parallel for reduction(+:mean)
+        #pragma omp parallel for reduction(+:temp)
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){ temp+=Phi.field[cp(I,J,K)+H*NNN];}}}
         Fout.meanfield[T/Fout.wait+H*Fout.length]=temp/pow(N-4,3);
     }
     for(int H=0;H<Nscalars*2;H++){
         temp=0;
-        #pragma omp parallel for reduction(+:mean)2*H*
+        #pragma omp parallel for reduction(+:temp)t
         for(int I=2;I<N-2;I++){for(int J=2;J<N-2;J++){for(int K=2;K<N-2;K++){ temp+=pow(Phi.field[cp(I,J,K)+H*NNN]-Fout.meanfield[T/Fout.wait+H*Fout.length],2);}}}
         Fout.stdevfield[T/Fout.wait+H*Fout.length]=sqrt(temp)/pow(N-4,3);
     }
@@ -479,7 +468,7 @@ void collect(field_class Phi, out_class Fout, cons_class Cons, int t, int output
         grid_file<<t<<" "<<t*dt;
         //for(int I=2;I<N-2;I=I+(N-4)/1) grid_file<<"   "<<Phi.field[cp(I,2,2)]*pow(Phi.Ah[0],1.5);
         //for(int I=2;I<N-2;I=I+(N-4)/1) grid_file<<"   "<<Phi.field[cp(I,2,2)+NNN]*pow(Phi.Ah[0],1.5);
-        for(int H=0;H<Nscalars;H++) grid_file<<"    "<<Fout.meanfield[t/Fout.wait+2*Fout.wait*H]*pow(Phi.Ah[0],1.5)<<"   "<<Fout.stdevfield[t/Fout.wait+2*Fout.wait*H]*pow(Phi.Ah[0],1.5)<<"  "<<Fout.meanfield[t/Fout.wait+2*Fout.wait*H+Fout.length]*pow(Phi.Ah[0],1.5)<<"   "<<Fout.stdevfield[t/Fout.wait+2*Fout.wait*H+Fout.length]*pow(Phi.Ah[0],1.5);
+        for(int H=0;H<Nscalars;H++) grid_file<<"    "<<Fout.meanfield[t/Fout.wait+2*Fout.length*H]*pow(Phi.Ah[0],1.5)<<"   "<<Fout.stdevfield[t/Fout.wait+2*Fout.length*H]*pow(Phi.Ah[0],1.5)<<"  "<<Fout.meanfield[t/Fout.wait+2*Fout.length*H+Fout.length]*pow(Phi.Ah[0],1.5)<<"   "<<Fout.stdevfield[t/Fout.wait+2*Fout.length*H+Fout.length]*pow(Phi.Ah[0],1.5);
         grid_file<<"    "<<Phi.Ah[0]<<"    "<<Phi.Lh[0];
         
         if(t%(Cons.wait+5)==4) grid_file<<"  -  "<<Cons.DtDensity[t/(Cons.wait+5)]<<"  "<<Cons.DxMomentum[t/(Cons.wait+5)]<<"   "<<Cons.Pressure[t/(Cons.wait+5)]<<"    "<<Cons.Density[t/(Cons.wait+5)*5+2]<<" "<<Cons.Error[t/(Cons.wait+5)];
@@ -491,16 +480,14 @@ void collect(field_class Phi, out_class Fout, cons_class Cons, int t, int output
 
 int main(){
     
-    double t_max=10*dt;
-    int datablock=1;
+    double t_max=1*dt;
     int E_wait=1;
     int O_wait=1;
     int inflation_on=1;//1=on, 0=off
     int output_type=2;
     double H0=.50467;
-    double phi0=1.009343;
-    double pi0=-phi0/sqrt(2)*inflation_on;
-    
+    double phi0[2]={1.009343,0};
+    double pi0[2]={-phi0[0]/sqrt(2)*inflation_on,0};
     
     int Tmax=int(t_max/dt);
     int gridsize=2*Np*Np*Np*Nscalars;
@@ -512,6 +499,8 @@ int main(){
     PHI.M=new double[Nscalars];
     PHI.Ah=new double[1];
     PHI.Lh=new double[1];
+    PHI.M[0]=1;
+    PHI.M[1]=0;
 
     cons_class CONS;
 
@@ -545,14 +534,14 @@ int main(){
     time(&start_timer);
     
     Ocollect(PHI, FOUT, 0, grid_file);
-    Ecollect(PHI, CONS, 0, Tmax);
+    //Ecollect(PHI, CONS, 0, Tmax);
     collect(PHI, FOUT, CONS, 0, output_type, grid_file);
 
     cout<<"0%  ---*"<<endl;
     for(int T=1;T<Tmax+1;T++){
         cout<<T*1.0/Tmax*100<<"%";
         advance(PHI,inflation_on);
-        if (T%(E_wait+5)<5 && EL>0){ Ecollect(PHI, CONS, T, Tmax); cout<<"  ---";}
+        //if (T%(E_wait+5)<5 && EL>0){ Ecollect(PHI, CONS, T, Tmax); cout<<"  ---";}
         if ((T)%(O_wait)==0){ Ocollect(PHI, FOUT, T, grid_file); cout<<" *";}
         if (T%O_wait==0) collect(PHI, FOUT, CONS, T, output_type, grid_file);
         cout<<endl;
